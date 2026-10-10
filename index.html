@@ -3,10 +3,151 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mon Site Web</title>
+    <title>Jeu de Plateforme HTML5</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        h1 {
+            margin-bottom: 10px;
+            font-size: 1.5rem;
+        }
+        canvas {
+            border: 4px solid #ffffff;
+            background-color: #222222;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        .instructions {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: #aaaaaa;
+        }
+    </style>
 </head>
 <body>
-    <h1>Bienvenue sur mon nouveau site web hébergé par GitHub !</h1>
-    <p>Le site est opérationnel.</p>
+
+    <h1>Mon Premier Jeu de Plateforme</h1>
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
+    <div class="instructions">Utilisez les touches <b>Flèche Gauche / Flèche Droite</b> pour bouger et <b>Espace</b> pour sauter.</div>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        // État du joueur
+        let player = {
+            x: 50,
+            y: 200,
+            width: 30,
+            height: 30,
+            vx: 0,
+            vy: 0,
+            speed: 4,
+            jumpPower: -10,
+            grounded: false
+        };
+
+        // Paramètres du monde
+        const gravity = 0.5;
+        let keys = {};
+
+        // Plateformes du jeu
+        const platforms = [
+            { x: 0, y: 350, width: 800, height: 50 },  // Sol principal
+            { x: 200, y: 260, width: 150, height: 20 },
+            { x: 450, y: 180, width: 150, height: 20 },
+            { x: 150, y: 120, width: 120, height: 20 }
+        ];
+
+        // Écouteurs de clavier
+        window.addEventListener("keydown", (e) => { keys[e.code] = true; });
+        window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+        function update() {
+            // Mouvements horizontaux
+            if (keys["ArrowLeft"] || keys["KeyA"]) {
+                player.vx = -player.speed;
+            } else if (keys["ArrowRight"] || keys["KeyD"]) {
+                player.vx = player.speed;
+            } else {
+                player.vx = 0;
+            }
+
+            // Saut
+            if ((keys["Space"] || keys["ArrowUp"] || keys["KeyW"]) && player.grounded) {
+                player.vy = player.jumpPower;
+                player.grounded = false;
+            }
+
+            // Appliquer la gravité
+            player.vy += gravity;
+
+            // Mettre à jour la position
+            player.x += player.vx;
+            player.y += player.vy;
+
+            // Réinitialiser l'état au sol avant les tests de collision
+            player.grounded = false;
+
+            // Collisions avec les plateformes
+            platforms.forEach(plat => {
+                // Collision par le haut (atterrissage)
+                if (
+                    player.x < plat.x + plat.width &&
+                    player.x + player.width > plat.x &&
+                    player.y + player.height >= plat.y &&
+                    player.y + player.height - player.vy <= plat.y
+                ) {
+                    player.y = plat.y - player.height;
+                    player.vy = 0;
+                    player.grounded = true;
+                }
+            });
+
+            // Limites de l'écran (gauche / droite)
+            if (player.x < 0) player.x = 0;
+            if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+
+            // Si le joueur tombe en bas de l'écran, on le réinitialise
+            if (player.y > canvas.height) {
+                player.x = 50;
+                player.y = 200;
+                player.vy = 0;
+            }
+        }
+
+        function draw() {
+            // Effacer l'écran
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Dessiner les plateformes
+            ctx.fillStyle = "#4CAF50";
+            platforms.forEach(plat => {
+                ctx.fillRect(plat.x, plat.y, plat.width, plat.height);
+            });
+
+            // Dessiner le joueur
+            ctx.fillStyle = "#FF5722";
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        // Lancer la boucle du jeu
+        loop();
+    </script>
+
 </body>
 </html>
