@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jeu de Plateforme HTML5</title>
+    <title>Jeu de Plateforme - Mode Compétition</title>
     <style>
         body {
             margin: 0;
@@ -17,7 +17,7 @@
             height: 100vh;
         }
         h1 {
-            margin-bottom: 10px;
+            margin-bottom: 5px;
             font-size: 1.5rem;
         }
         canvas {
@@ -34,120 +34,585 @@
 </head>
 <body>
 
-    <h1>Mon Premier Jeu de Plateforme</h1>
+    <h1>Jeu de Plateforme & Emojis - Compétition</h1>
     <canvas id="gameCanvas" width="800" height="400"></canvas>
-    <div class="instructions">Utilisez les touches <b>Flèche Gauche / Flèche Droite</b> pour bouger et <b>Espace</b> pour sauter.</div>
+    <div class="instructions"><b>Flèches</b> (<b>Bas</b> pour descendre), <b>Espace</b> pour tirer. 50 Niveaux fixes !</div>
 
     <script>
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
 
-        // État du joueur
+        const SHEETDB_URL = "https://sheetdb.io/api/v1/exp6qwvzmrmzk";
+
+        let gameState = "MENU";
+        let deathTimer = 0;
+        let levelClearTimer = 0;
+        let spawnProtectionTimer = 0;
+
         let player = {
-            x: 50,
-            y: 200,
-            width: 30,
-            height: 30,
-            vx: 0,
-            vy: 0,
-            speed: 4,
-            jumpPower: -10,
-            grounded: false
+            x: 50, y: 300, width: 30, height: 30,
+            vx: 0, vy: 0, speed: 5, jumpPower: -11,
+            grounded: false, facing: 1,
+            ignorePlatform: null // Référence temporaire à la plateforme ignorée lors de l'appui sur Bas
         };
 
-        // Paramètres du monde
+        let enemies = [];
+        let targets = [];
+        let bullets = [];
+        let particles = [];
+        let spikes = [];
+        let topScores = [];
+
         const gravity = 0.5;
         let keys = {};
+        let score = 0;
+        let level = 0;
+        let lives = 4;
+        let nextLifeMilestone = 250;
+        let platforms = [];
 
-        // Plateformes du jeu
-        const platforms = [
-            { x: 0, y: 350, width: 800, height: 50 },  // Sol principal
-            { x: 200, y: 260, width: 150, height: 20 },
-            { x: 450, y: 180, width: 150, height: 20 },
-            { x: 150, y: 120, width: 120, height: 20 }
-        ];
+        let screenFlashColor = null;
+        let flashTimer = 0;
 
-        // Écouteurs de clavier
-        window.addEventListener("keydown", (e) => { keys[e.code] = true; });
-        window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+        function triggerFlash(color, duration = 15) {
+            screenFlashColor = color;
+            flashTimer = duration;
+        }
+
+        function createExplosion(x, y, color, count = 15) {
+            for (let i = 0; i < count; i++) {
+                let angle = Math.random() * Math.PI * 2;
+                let speed = 1 + Math.random() * 4;
+                particles.push({
+                    x: x, y: y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    radius: 2 + Math.random() * 3,
+                    color: color,
+                    alpha: 1,
+                    decay: 0.02 + Math.random() * 0.03
+                });
+            }
+        }
+
+        function createFirework(x, y) {
+            const colors = ["#FFEB3B", "#FF4081", "#00BCD4", "#4CAF50", "#FF9800", "#E040FB"];
+            for (let i = 0; i < 60; i++) {
+                let angle = Math.random() * Math.PI * 2;
+                let speed = 2 + Math.random() * 6;
+                particles.push({
+                    x: x, y: y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    radius: 2 + Math.random() * 4,
+                    color: colors[Math.floor(Math.random() * colors.length)],
+                    alpha: 1,
+                    decay: 0.01 + Math.random() * 0.015
+                });
+            }
+        }
+
+        let scoreSubmitted = false;
+
+        function checkCollisionRect(r1, r2, margin = 5) {
+            return (
+                r1.x < r2.x + r2.width + margin &&
+                r1.x + r1.width + margin > r2.x &&
+                r1.y < r2.y + r2.height + margin &&
+                r1.y + r1.height + margin > r2.y
+            );
+        }
+
+        async function fetchLeaderboard() {
+            try {
+                let response = await fetch(SHEETDB_URL);
+                let data = await response.json();
+                if (Array.isArray(data)) {
+                    data.sort((a, b) => parseInt(b.score) - parseInt(a.score));
+                    topScores = data.slice(0, 5);
+                }
+            } catch (error) {
+                console.error("Erreur de chargement du classement :", error);
+            }
+        }
+
+        async function submitScore(playerName, finalScore) {
+            try {
+                let response = await fetch(SHEETDB_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        data: {
+                            nom: playerName,
+                            score: finalScore
+                        }
+                    })
+                });
+                let result = await response.json();
+                fetchLeaderboard();
+            } catch (error) {
+                console.error("Erreur d'envoi du score :", error);
+            }
+        }
+
+        fetchLeaderboard();
+
+        // --- BASE DE DONNÉES DE 50 NIVEAUX FIXES ET SÉCURISÉS ---
+        const PRESET_LEVELS = [];
+
+        function generatePresetDatabase() {
+            for (let l = 0; l < 50; l++) {
+                let lvlData = { platforms: [], spikes: [], targets: [], enemies: [] };
+
+                if (l === 0) {
+                    lvlData.platforms.push({ x: 0, y: 360, width: 200, height: 40, type: "normal", visible: true, isGround: true });
+                    lvlData.platforms.push({ x: 260, y: 280, width: 120, height: 18, type: "normal", visible: true, isGround: false });
+                    lvlData.platforms.push({ x: 440, y: 200, width: 120, height: 18, type: "normal", visible: true, isGround: false });
+                    lvlData.platforms.push({ x: 620, y: 120, width: 120, height: 18, type: "normal", visible: true, isGround: false });
+
+                    lvlData.targets.push({ x: 320, y: 280 - 18, radius: 14, collected: false });
+                    lvlData.targets.push({ x: 500, y: 200 - 18, radius: 14, collected: false });
+                    lvlData.targets.push({ x: 680, y: 120 - 18, radius: 14, collected: false });
+                    lvlData.targets.push({ x: 100, y: 360 - 18, radius: 14, collected: false });
+                    lvlData.targets.push({ x: 350, y: 360 - 18, radius: 14, collected: false });
+
+                    lvlData.enemies.push({
+                        x: 460, y: 200 - 28, width: 28, height: 28,
+                        vx: 1, minX: 440, maxX: 440 + 120 - 28, alive: true
+                    });
+
+                    PRESET_LEVELS.push(lvlData);
+                    continue;
+                }
+
+                lvlData.platforms.push({ x: 0, y: 360, width: 180, height: 40, type: "normal", visible: true, isGround: true });
+
+                let numPlats = 4 + Math.floor(l / 15);
+                let lastX = 180, lastY = 360;
+
+                for (let i = 0; i < numPlats; i++) {
+                    let pWidth = Math.max(75, 100 - (l * 0.3));
+                    let pY = lastY - (35 + (i % 2) * 25);
+                    if (pY < 90) pY = 90 + (i % 2) * 30;
+                    if (pY > 300) pY = 300;
+
+                    let pX = lastX + 45 + Math.random() * 60;
+                    if (pX + pWidth > 760) pX = 760 - pWidth;
+
+                    let type = "normal";
+                    if (l >= 8 && i % 2 === 1) {
+                        type = (l >= 25 && i % 3 === 0) ? "vanish" : "moving";
+                    }
+
+                    let newPlat = {
+                        x: pX, y: pY, width: pWidth, height: 18,
+                        type: type, visible: true, isGround: false,
+                        vx: (type === "moving") ? 1.2 : 0,
+                        minX: Math.max(40, pX - 45),
+                        maxX: Math.min(760, pX + 45),
+                        timer: 0
+                    };
+                    lvlData.platforms.push(newPlat);
+                    lastX = pX; lastY = pY;
+
+                    if (l >= 4 && type === "normal" && pWidth > 85 && i > 0 && (l + i) % 4 === 0) {
+                        lvlData.spikes.push({
+                            x: pX + pWidth / 2 - 10,
+                            y: pY - 12,
+                            width: 20,
+                            height: 12
+                        });
+                    }
+                }
+
+                let platList = [...lvlData.platforms];
+                for (let i = 0; i < 5; i++) {
+                    let p = platList[i % platList.length];
+                    let tx = p.x + p.width / 2;
+                    let ty = p.y - 18;
+                    let hasSpike = lvlData.spikes.some(s => Math.abs(s.x + 10 - tx) < 20);
+                    if (hasSpike) tx -= 20;
+                    
+                    lvlData.targets.push({ x: tx, y: ty, radius: 14, collected: false });
+                }
+
+                if (l >= 2) {
+                    let enemyPlats = lvlData.platforms.filter(p => p.x > 200);
+                    for (let p of enemyPlats) {
+                        if (lvlData.enemies.length >= Math.min(4, 1 + Math.floor(l / 12))) break;
+                        let hasSpike = lvlData.spikes.some(s => Math.abs(s.x - p.x) < p.width);
+                        if (!hasSpike) {
+                            lvlData.enemies.push({
+                                x: p.x + 10, y: p.y - 28, width: 28, height: 28,
+                                vx: 1.5, minX: p.x, maxX: p.x + p.width - 28, alive: true
+                            });
+                        }
+                    }
+                }
+
+                PRESET_LEVELS.push(lvlData);
+            }
+        }
+
+        generatePresetDatabase();
+
+        function loadLevel(levelIndex) {
+            let index = levelIndex % PRESET_LEVELS.length;
+            let data = PRESET_LEVELS[index];
+
+            platforms = JSON.parse(JSON.stringify(data.platforms));
+            spikes = JSON.parse(JSON.stringify(data.spikes));
+            targets = JSON.parse(JSON.stringify(data.targets));
+            enemies = JSON.parse(JSON.stringify(data.enemies));
+            bullets = [];
+            particles = [];
+
+            player.x = 50; player.y = 300; player.vx = 0; player.vy = 0; player.grounded = false;
+            player.ignorePlatform = null;
+            spawnProtectionTimer = 60;
+        }
+
+        function triggerDeath() {
+            if (spawnProtectionTimer > 0) return;
+            if (gameState === "DYING" || gameState === "GAMEOVER" || gameState === "LEVEL_CLEARING" || gameState === "LEVEL_WAITING") return;
+            
+            gameState = "DYING";
+            deathTimer = 50;
+            createExplosion(player.x + player.width / 2, player.y + player.height / 2, "#F44336", 30);
+            triggerFlash("rgba(255, 0, 0, 0.5)", 25);
+            lives--;
+        }
+
+        function triggerLevelClear() {
+            gameState = "LEVEL_CLEARING";
+            levelClearTimer = 80;
+            createFirework(canvas.width / 2, canvas.height / 2);
+            createFirework(canvas.width / 3, canvas.height / 3);
+            createFirework((canvas.width / 3) * 2, canvas.height / 3);
+            triggerFlash("rgba(255, 255, 255, 0.4)", 20);
+        }
+
+        function startGame() {
+            score = 0; level = 0; lives = 4; nextLifeMilestone = 250;
+            scoreSubmitted = false;
+            particles = [];
+            fetchLeaderboard();
+            loadLevel(level);
+            gameState = "PLAYING";
+        }
+
+        window.addEventListener("keydown", (e) => {
+            if (gameState === "MENU" && e.code === "Space") {
+                startGame();
+                return;
+            }
+
+            if (gameState === "LEVEL_WAITING" && (e.code === "Space" || e.code === "Enter")) {
+                level++;
+                loadLevel(level);
+                gameState = "PLAYING";
+                return;
+            }
+
+            if (gameState === "GAMEOVER" && (e.code === "Space" || e.code === "Enter")) {
+                gameState = "MENU";
+                fetchLeaderboard();
+                return;
+            }
+
+            if (gameState === "PLAYING" && e.code === "Space") {
+                bullets.push({ x: player.x + player.width / 2, y: player.y + player.height / 2, radius: 5, vx: player.facing * 8 });
+            }
+
+            keys[e.code] = true;
+        });
+
+        window.addEventListener("keyup", (e) => { 
+            keys[e.code] = false; 
+            if (e.code === "ArrowDown") {
+                player.ignorePlatform = null; // Réinitialise l'autorisation de traverser quand on relâche la touche Bas
+            }
+        });
 
         function update() {
-            // Mouvements horizontaux
-            if (keys["ArrowLeft"] || keys["KeyA"]) {
-                player.vx = -player.speed;
-            } else if (keys["ArrowRight"] || keys["KeyD"]) {
-                player.vx = player.speed;
-            } else {
-                player.vx = 0;
+            if (spawnProtectionTimer > 0) spawnProtectionTimer--;
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.alpha -= p.decay;
+                if (p.alpha <= 0) particles.splice(i, 1);
             }
 
-            // Saut
-            if ((keys["Space"] || keys["ArrowUp"] || keys["KeyW"]) && player.grounded) {
-                player.vy = player.jumpPower;
-                player.grounded = false;
+            if (gameState === "DYING") {
+                deathTimer--;
+                if (deathTimer <= 0) {
+                    if (lives <= 0) {
+                        gameState = "GAMEOVER";
+                        if (!scoreSubmitted && score > 0) {
+                            scoreSubmitted = true;
+                            let playerName = prompt("Game Over ! Entrez votre nom pour le classement mondial :", "Joueur");
+                            if (playerName) submitScore(playerName.trim(), score);
+                        }
+                    } else {
+                        player.x = 50; player.y = 300; player.vx = 0; player.vy = 0; player.grounded = false;
+                        player.ignorePlatform = null;
+                        spawnProtectionTimer = 60;
+                        gameState = "PLAYING";
+                    }
+                }
+                return;
             }
 
-            // Appliquer la gravité
-            player.vy += gravity;
+            if (gameState === "LEVEL_CLEARING") {
+                levelClearTimer--;
+                if (levelClearTimer <= 0) gameState = "LEVEL_WAITING";
+                return;
+            }
 
-            // Mettre à jour la position
-            player.x += player.vx;
-            player.y += player.vy;
+            if (gameState === "LEVEL_WAITING") return;
+            if (gameState !== "PLAYING") return;
 
-            // Réinitialiser l'état au sol avant les tests de collision
-            player.grounded = false;
-
-            // Collisions avec les plateformes
             platforms.forEach(plat => {
-                // Collision par le haut (atterrissage)
-                if (
-                    player.x < plat.x + plat.width &&
-                    player.x + player.width > plat.x &&
-                    player.y + player.height >= plat.y &&
-                    player.y + player.height - player.vy <= plat.y
-                ) {
-                    player.y = plat.y - player.height;
-                    player.vy = 0;
-                    player.grounded = true;
+                if (plat.type === "moving") {
+                    plat.x += plat.vx;
+                    if (plat.x <= plat.minX || plat.x >= plat.maxX) plat.vx *= -1;
+                }
+                if (plat.type === "vanish") {
+                    plat.timer++;
+                    if (plat.timer % 180 < 120) {
+                        plat.visible = true;
+                    } else {
+                        plat.visible = false;
+                    }
                 }
             });
 
-            // Limites de l'écran (gauche / droite)
+            if (keys["ArrowLeft"]) { player.vx = -player.speed; player.facing = -1; }
+            else if (keys["ArrowRight"]) { player.vx = player.speed; player.facing = 1; }
+            else { player.vx = 0; }
+
+            if (keys["ArrowUp"] && player.grounded) { 
+                player.vy = player.jumpPower; 
+                player.grounded = false; 
+                player.ignorePlatform = null;
+            }
+
+            // Gestion de la flèche du bas pour descendre d'une plateforme
+            if (keys["ArrowDown"] && player.grounded) {
+                platforms.forEach(plat => {
+                    if (!plat.isGround && player.x + player.width > plat.x && player.x < plat.x + plat.width &&
+                        Math.abs((player.y + player.height) - plat.y) < 5) {
+                        player.ignorePlatform = plat; // On ignore temporairement cette plateforme
+                        player.grounded = false;
+                        player.y += 4; // Petit coup de pouce vers le bas pour amorcer la chute
+                    }
+                });
+            }
+
+            player.vy += gravity;
+            player.x += player.vx;
+            player.y += player.vy;
+
+            player.grounded = false;
+            platforms.forEach(plat => {
+                if (!plat.visible) return;
+                if (plat === player.ignorePlatform) return; // Ignore la plateforme si le joueur vient de descendre
+
+                // Collision par le haut
+                if (player.x + player.width > plat.x && player.x < plat.x + plat.width &&
+                    player.y + player.height >= plat.y && player.y + player.height - player.vy <= plat.y + 6 && player.vy >= 0) {
+                    player.y = plat.y - player.height;
+                    player.vy = 0;
+                    player.grounded = true;
+                    player.ignorePlatform = null; // Réinitialise l'ignorance une fois posé ailleurs
+                    if (plat.type === "moving") {
+                        player.x += plat.vx;
+                    }
+                }
+            });
+
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                bullets[i].x += bullets[i].vx;
+                if (bullets[i].x < 0 || bullets[i].x > canvas.width) { bullets.splice(i, 1); continue; }
+                let bulletHit = false;
+                for (let enemy of enemies) {
+                    if (enemy.alive && checkCollisionRect({x: bullets[i].x - 5, y: bullets[i].y - 5, width: 10, height: 10}, enemy, 0)) {
+                        enemy.alive = false;
+                        score += 25;
+                        createExplosion(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2, "#FFEB3B", 15);
+                        triggerFlash("rgba(255, 255, 0, 0.3)", 10);
+                        bulletHit = true; break;
+                    }
+                }
+                if (bulletHit) bullets.splice(i, 1);
+            }
+
+            enemies.forEach(enemy => {
+                if (enemy.alive) {
+                    enemy.x += enemy.vx;
+                    if (enemy.x <= enemy.minX || enemy.x >= enemy.maxX) enemy.vx *= -1;
+                }
+            });
+
+            for (let spike of spikes) {
+                if (checkCollisionRect(player, spike, 2)) {
+                    triggerDeath();
+                    return;
+                }
+            }
+
+            for (let enemy of enemies) {
+                if (enemy.alive && checkCollisionRect(player, enemy, 0)) { triggerDeath(); return; }
+            }
+
+            let allCollected = true;
+            targets.forEach(t => {
+                if (!t.collected) {
+                    let distX = (player.x + player.width / 2) - t.x;
+                    let distY = (player.y + player.height / 2) - t.y;
+                    if (Math.abs(distX) < player.width/2 + t.radius && Math.abs(distY) < player.height/2 + t.radius) {
+                        t.collected = true;
+                        score += 50;
+                        createExplosion(t.x, t.y, "#4CAF50", 12);
+                        triggerFlash("rgba(0, 255, 0, 0.2)", 10);
+                        if (score >= nextLifeMilestone) { lives++; nextLifeMilestone += 250; }
+                    }
+                }
+                if (!t.collected) allCollected = false;
+            });
+
+            if (allCollected && targets.length > 0) {
+                triggerLevelClear();
+            }
+
             if (player.x < 0) player.x = 0;
             if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
-
-            // Si le joueur tombe en bas de l'écran, on le réinitialise
-            if (player.y > canvas.height) {
-                player.x = 50;
-                player.y = 200;
-                player.vy = 0;
-            }
+            if (player.y > canvas.height) triggerDeath();
         }
 
         function draw() {
-            // Effacer l'écran
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // Dessiner les plateformes
-            ctx.fillStyle = "#4CAF50";
+            if (gameState === "MENU") {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = "#4CAF50";
+                ctx.font = "bold 32px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText("😊 JEU DE PLATEFORME 🍒", canvas.width / 2, 50);
+
+                ctx.fillStyle = "#FFEB3B";
+                ctx.font = "bold 16px Arial";
+                ctx.fillText("--- CLASSEMENT MONDIAL (50 NIVEAUX) ---", canvas.width / 2, 95);
+
+                ctx.font = "15px Arial";
+                ctx.fillStyle = "#ffffff";
+                if (topScores.length === 0) {
+                    ctx.fillText("Chargement du classement...", canvas.width / 2, 135);
+                } else {
+                    topScores.forEach((item, index) => {
+                        ctx.fillText(`${index + 1}. ${item.nom} - ${item.score} pts`, canvas.width / 2, 135 + (index * 24));
+                    });
+                }
+
+                ctx.fillStyle = "#00BCD4";
+                ctx.font = "bold 18px Arial";
+                ctx.fillText("Appuyez sur ESPACE pour Jouer", canvas.width / 2, 335);
+                ctx.textAlign = "left";
+                return;
+            }
+
             platforms.forEach(plat => {
+                if (!plat.visible) return;
+                if (plat.type === "moving") ctx.fillStyle = "#03A9F4";
+                else if (plat.type === "vanish") ctx.fillStyle = "#9C27B0";
+                else ctx.fillStyle = "#4CAF50";
                 ctx.fillRect(plat.x, plat.y, plat.width, plat.height);
             });
 
-            // Dessiner le joueur
-            ctx.fillStyle = "#FF5722";
-            ctx.fillRect(player.x, player.y, player.width, player.height);
+            ctx.fillStyle = "#F44336";
+            ctx.font = "16px Arial";
+            ctx.textAlign = "center";
+            spikes.forEach(s => {
+                ctx.fillText("▲", s.x + s.width / 2, s.y + s.height);
+            });
+
+            ctx.font = "24px Arial"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            targets.forEach(t => { if (!t.collected) ctx.fillText("🍒", t.x, t.y); });
+            enemies.forEach(enemy => { if (enemy.alive) ctx.fillText("😈", enemy.x + enemy.width / 2, enemy.y + enemy.height / 2); });
+
+            ctx.fillStyle = "#00BCD4";
+            bullets.forEach(b => { ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2); ctx.fill(); });
+
+            if (gameState !== "DYING") {
+                if (spawnProtectionTimer <= 0 || Math.floor(spawnProtectionTimer / 5) % 2 === 0) {
+                    ctx.fillText("😊", player.x + player.width / 2, player.y + player.height / 2);
+                }
+            }
+
+            particles.forEach(p => {
+                ctx.save();
+                ctx.globalAlpha = p.alpha;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            });
+
+            if (flashTimer > 0 && screenFlashColor) {
+                ctx.fillStyle = screenFlashColor; ctx.fillRect(0, 0, canvas.width, canvas.height); flashTimer--;
+            }
+
+            if (gameState === "LEVEL_WAITING") {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = "#FFEB3B"; ctx.font = "bold 28px Arial"; ctx.textAlign = "center";
+                ctx.fillText("✨ NIVEAU " + (level + 1) + " TERMINÉ ! ✨", canvas.width / 2, canvas.height / 2 - 30);
+                
+                ctx.fillStyle = "#4CAF50"; ctx.font = "bold 18px Arial";
+                ctx.fillText("Appuyez sur ESPACE pour le Niveau Suivant", canvas.width / 2, canvas.height / 2 + 25);
+                ctx.textAlign = "left";
+            }
+
+            let remainingTargets = targets.filter(t => !t.collected).length;
+
+            ctx.textAlign = "left"; ctx.fillStyle = "#ffffff"; ctx.font = "bold 14px Arial";
+            ctx.fillText("Score: " + score, 15, 25);
+            ctx.fillText("Niveau: " + (level + 1), 130, 25);
+            ctx.fillText("🍒: " + remainingTargets, 230, 25);
+            ctx.fillText("Vies: " + "❤️ ".repeat(Math.max(0, lives)), 330, 25);
+
+            if (gameState === "GAMEOVER") {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = "#F44336"; ctx.font = "bold 30px Arial"; ctx.textAlign = "center";
+                ctx.fillText("GAME OVER", canvas.width / 2, 45);
+
+                ctx.fillStyle = "#FFEB3B"; ctx.font = "bold 16px Arial";
+                ctx.fillText("--- TOP 5 MONDIAL ---", canvas.width / 2, 85);
+
+                ctx.font = "15px Arial"; ctx.fillStyle = "#ffffff";
+                topScores.forEach((item, index) => {
+                    ctx.fillText(`${index + 1}. ${item.nom} - ${item.score} pts`, canvas.width / 2, 115 + (index * 22));
+                });
+
+                ctx.fillStyle = "#4CAF50"; ctx.font = "bold 16px Arial";
+                ctx.fillText("Appuyez sur ESPACE pour retourner au Menu", canvas.width / 2, 340);
+                ctx.textAlign = "left";
+            }
         }
 
-        function loop() {
-            update();
-            draw();
-            requestAnimationFrame(loop);
-        }
-
-        // Lancer la boucle du jeu
+        function loop() { update(); draw(); requestAnimationFrame(loop); }
         loop();
     </script>
-
 </body>
 </html>
