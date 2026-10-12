@@ -24,11 +24,25 @@
             border: 4px solid #ffffff;
             background-color: #222222;
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            max-width: 96vw;
+            height: auto;
         }
         .instructions {
             margin-top: 10px;
             font-size: 0.9rem;
             color: #aaaaaa;
+        }
+        #editorNamePanel {
+            margin-top: 8px;
+            color: #ffffff;
+            font-size: 0.9rem;
+        }
+        #editorNamePanel input {
+            margin-left: 6px;
+            padding: 5px;
+            background: #222222;
+            border: 1px solid #aaaaaa;
+            color: #ffffff;
         }
     </style>
 </head>
@@ -36,11 +50,24 @@
 
     <h1>Jeu de Plateforme & Emojis - Compétition</h1>
     <canvas id="gameCanvas" width="800" height="400"></canvas>
-    <div class="instructions"><b>Flèches</b> (<b>Bas</b> pour descendre), <b>Espace</b> pour tirer. 50 Niveaux fixes !</div>
+    <div id="editorNamePanel" hidden>Nom du tableau : <input id="editorLevelName" type="text" maxlength="40"></div>
+    <div class="instructions"><b>Clavier :</b> flèches, <b>Espace</b> pour tirer. <b>Manette PSOne Mini :</b> stick/croix directionnelle, <b>Croix</b> pour sauter, <b>Carré</b> ou gâchette droite pour tirer, <b>Start</b> pour valider.</div>
 
     <script>
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
+        const editorNamePanel = document.getElementById("editorNamePanel");
+        const editorNameInput = document.getElementById("editorLevelName");
+
+        function resizeGameCanvas() {
+            const availableHeight = Math.max(120, window.innerHeight - 110);
+            const targetWidth = Math.sqrt(window.innerWidth * window.innerHeight);
+            const canvasWidth = Math.min(targetWidth, window.innerWidth * 0.96, availableHeight * 2);
+            canvas.style.width = `${canvasWidth}px`;
+        }
+
+        window.addEventListener("resize", resizeGameCanvas);
+        resizeGameCanvas();
 
         const SHEETDB_URL = "https://sheetdb.io/api/v1/exp6qwvzmrmzk";
 
@@ -48,6 +75,8 @@
         let deathTimer = 0;
         let levelClearTimer = 0;
         let spawnProtectionTimer = 0;
+        let gamepadInput = { left: false, right: false, up: false, down: false };
+        let previousGamepadButtons = [];
 
         let player = {
             x: 50, y: 300, width: 30, height: 30,
@@ -70,6 +99,12 @@
         let lives = 4;
         let nextLifeMilestone = 250;
         let platforms = [];
+        const CUSTOM_LEVELS_STORAGE_KEY = "htmlgame-custom-levels";
+        let customLevels = loadCustomLevels();
+        let customEditor = { level: null, tool: "platform", dragStart: null, pointer: null, message: "", dirty: false };
+        let customListOffset = 0;
+        let customMode = false;
+        let customReturnState = "CUSTOM_LEVELS";
 
         let screenFlashColor = null;
         let flashTimer = 0;
@@ -263,20 +298,82 @@
 
         generatePresetDatabase();
 
-        function loadLevel(levelIndex) {
-            let index = levelIndex % PRESET_LEVELS.length;
-            let data = PRESET_LEVELS[index];
+        function createEmptyCustomLevel(name = "Nouveau tableau") {
+            return {
+                id: Date.now(),
+                name,
+                platforms: [{ x: 0, y: 360, width: 800, height: 40, type: "normal", visible: true, isGround: true }],
+                spikes: [],
+                targets: [{ x: 740, y: 330, radius: 14, collected: false }],
+                enemies: []
+            };
+        }
 
-            platforms = JSON.parse(JSON.stringify(data.platforms));
-            spikes = JSON.parse(JSON.stringify(data.spikes));
-            targets = JSON.parse(JSON.stringify(data.targets));
-            enemies = JSON.parse(JSON.stringify(data.enemies));
+        function loadCustomLevels() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(CUSTOM_LEVELS_STORAGE_KEY) || "[]");
+                if (!Array.isArray(saved)) throw new Error("Le format des tableaux sauvegardés est invalide.");
+                return saved.filter(item =>
+                    item && Number.isFinite(item.id) && typeof item.name === "string" &&
+                    Array.isArray(item.platforms) && Array.isArray(item.spikes) &&
+                    Array.isArray(item.targets) && Array.isArray(item.enemies)
+                );
+            } catch (error) {
+                console.error("Erreur de chargement des tableaux personnalisés :", error);
+                return [];
+            }
+        }
+
+        function saveCustomLevels() {
+            try {
+                localStorage.setItem(CUSTOM_LEVELS_STORAGE_KEY, JSON.stringify(customLevels));
+                return true;
+            } catch (error) {
+                console.error("Erreur de sauvegarde des tableaux personnalisés :", error);
+                customEditor.message = "Sauvegarde impossible dans ce navigateur.";
+                return false;
+            }
+        }
+
+        function copyLevelData(data) {
+            return JSON.parse(JSON.stringify(data));
+        }
+
+        function applyLevelData(data) {
+            platforms = copyLevelData(data.platforms);
+            spikes = copyLevelData(data.spikes);
+            targets = copyLevelData(data.targets);
+            enemies = copyLevelData(data.enemies);
             bullets = [];
             particles = [];
 
             player.x = 50; player.y = 300; player.vx = 0; player.vy = 0; player.grounded = false;
             player.ignorePlatform = null;
             spawnProtectionTimer = 60;
+        }
+
+        function loadLevel(levelIndex) {
+            let index = levelIndex % PRESET_LEVELS.length;
+            let data = PRESET_LEVELS[index];
+
+            applyLevelData(data);
+            customMode = false;
+        }
+
+        function startCustomLevel(data, returnState) {
+            score = 0; lives = 4; nextLifeMilestone = 250;
+            customMode = true;
+            customReturnState = returnState;
+            applyLevelData(data);
+            gameState = "PLAYING";
+        }
+
+        function returnFromCustomLevel() {
+            customMode = false;
+            gameState = customReturnState;
+            if (gameState === "EDITOR" && !customEditor.level) {
+                gameState = "CUSTOM_LEVELS";
+            }
         }
 
         function triggerDeath() {
@@ -291,6 +388,11 @@
         }
 
         function triggerLevelClear() {
+            if (customMode) {
+                gameState = "CUSTOM_COMPLETE";
+                createFirework(canvas.width / 2, canvas.height / 2);
+                return;
+            }
             gameState = "LEVEL_CLEARING";
             levelClearTimer = 80;
             createFirework(canvas.width / 2, canvas.height / 2);
@@ -308,26 +410,20 @@
             gameState = "PLAYING";
         }
 
-        window.addEventListener("keydown", (e) => {
-            if (gameState === "MENU" && e.code === "Space") {
+        function handleConfirmAction() {
+            if (gameState === "MENU") {
                 startGame();
-                return;
-            }
-
-            if (gameState === "LEVEL_WAITING" && (e.code === "Space" || e.code === "Enter")) {
+            } else if (gameState === "CUSTOM_COMPLETE") {
+                returnFromCustomLevel();
+            } else if (gameState === "LEVEL_WAITING") {
                 level++;
                 loadLevel(level);
                 gameState = "PLAYING";
-                return;
-            }
-
-            if (gameState === "GAMEOVER" && (e.code === "Space" || e.code === "Enter")) {
-                gameState = "MENU";
+            } else if (gameState === "GAMEOVER") {
+                gameState = customMode ? customReturnState : "MENU";
+                customMode = false;
                 fetchLeaderboard();
-                return;
-            }
-
-            if (gameState === "VICTORY" && (e.code === "Space" || e.code === "Enter")) {
+            } else if (gameState === "VICTORY") {
                 if (!scoreSubmitted) {
                     let playerName = prompt("Victoire ! Entrez votre nom pour le classement mondial :", "Joueur");
                     if (!playerName || !playerName.trim()) return;
@@ -337,6 +433,201 @@
                 }
                 gameState = "MENU";
                 fetchLeaderboard();
+            }
+        }
+
+        function canvasPoint(event) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / (rect.width - 8);
+            const scaleY = canvas.height / (rect.height - 8);
+            return {
+                x: (event.clientX - rect.left - 4) * scaleX,
+                y: (event.clientY - rect.top - 4) * scaleY
+            };
+        }
+
+        function saveEditorLevel() {
+            const name = editorNameInput.value.trim();
+            if (!name) {
+                customEditor.message = "Entrez un nom pour sauvegarder.";
+                editorNameInput.focus();
+                return false;
+            }
+            customEditor.level.name = name;
+
+            const existingIndex = customLevels.findIndex(item => item.id === customEditor.level.id);
+            if (existingIndex >= 0) customLevels[existingIndex] = copyLevelData(customEditor.level);
+            else customLevels.push(copyLevelData(customEditor.level));
+
+            if (!saveCustomLevels()) return false;
+            customEditor.message = "Tableau sauvegardé.";
+            customEditor.dirty = false;
+            return true;
+        }
+
+        function leaveEditor() {
+            if (customEditor.dirty) {
+                customEditor.message = "Sauvegardez ou testez le tableau avant de quitter.";
+                return;
+            }
+            customEditor.dragStart = null;
+            customEditor.pointer = null;
+            gameState = "CUSTOM_LEVELS";
+        }
+
+        function removeEditorItem(x, y) {
+            const levelData = customEditor.level;
+            const targetIndex = levelData.targets.findIndex(item => Math.hypot(item.x - x, item.y - y) < 22);
+            if (targetIndex >= 0) { levelData.targets.splice(targetIndex, 1); return; }
+
+            const enemyIndex = levelData.enemies.findIndex(item => Math.hypot(item.x + 14 - x, item.y + 14 - y) < 24);
+            if (enemyIndex >= 0) { levelData.enemies.splice(enemyIndex, 1); return; }
+
+            const spikeIndex = levelData.spikes.findIndex(item =>
+                x >= item.x - 10 && x <= item.x + item.width + 10 &&
+                y >= item.y - 10 && y <= item.y + item.height + 10
+            );
+            if (spikeIndex >= 0) { levelData.spikes.splice(spikeIndex, 1); return; }
+
+            const platformIndex = levelData.platforms.findIndex(item =>
+                x >= item.x && x <= item.x + item.width && y >= item.y - 8 && y <= item.y + item.height + 8
+            );
+            if (platformIndex >= 0) levelData.platforms.splice(platformIndex, 1);
+        }
+
+        canvas.addEventListener("mousedown", event => {
+            const { x, y } = canvasPoint(event);
+
+            if (gameState === "MENU") {
+                if (y >= 300 && y < 350) startGame();
+                else if (y >= 350) {
+                    customListOffset = 0;
+                    gameState = "CUSTOM_LEVELS";
+                }
+                return;
+            }
+
+            if (gameState === "CUSTOM_LEVELS") {
+                if (y >= 340 && y < 390) {
+                    customEditor.level = createEmptyCustomLevel(`Tableau ${customLevels.length + 1}`);
+                    editorNameInput.value = customEditor.level.name;
+                    customEditor.tool = "platform";
+                    customEditor.message = "Clique-glisse pour placer une plateforme.";
+                    customEditor.dirty = true;
+                    gameState = "EDITOR";
+                    return;
+                }
+                if (y >= 90 && y < 325) {
+                    const visibleIndex = Math.floor((y - 95) / 45);
+                    const levelIndex = customListOffset + visibleIndex;
+                    const item = customLevels[levelIndex];
+                    if (!item) return;
+                    if (x >= 590 && x < 685) {
+                        customLevels.splice(levelIndex, 1);
+                        customListOffset = Math.min(customListOffset, Math.max(0, customLevels.length - 5));
+                        saveCustomLevels();
+                    } else if (x >= 470 && x < 590) {
+                        customEditor.level = copyLevelData(item);
+                        editorNameInput.value = customEditor.level.name;
+                        customEditor.tool = "platform";
+                        customEditor.message = "Tableau chargé dans l’éditeur.";
+                        customEditor.dirty = false;
+                        gameState = "EDITOR";
+                    } else {
+                        startCustomLevel(item, "CUSTOM_LEVELS");
+                    }
+                } else if (y >= 390) {
+                    gameState = "MENU";
+                }
+                return;
+            }
+
+            if (gameState !== "EDITOR") return;
+
+            if (y < 55) {
+                if (x < 105) customEditor.tool = "platform";
+                else if (x < 195) customEditor.tool = "enemy";
+                else if (x < 285) customEditor.tool = "target";
+                else if (x < 375) customEditor.tool = "spike";
+                else if (x < 465) customEditor.tool = "erase";
+                else if (x >= 641) leaveEditor();
+                else if (x >= 558) {
+                    if (customEditor.level.targets.length === 0) {
+                        customEditor.message = "Ajoutez au moins une cerise avant de tester.";
+                        return;
+                    }
+                    if (saveEditorLevel()) startCustomLevel(customEditor.level, "EDITOR");
+                } else if (x >= 475) saveEditorLevel();
+                return;
+            }
+
+            if (customEditor.tool === "platform") {
+                customEditor.dragStart = { x, y };
+            } else if (customEditor.tool === "target") {
+                customEditor.level.targets.push({ x, y, radius: 14, collected: false });
+                customEditor.dirty = true;
+            } else if (customEditor.tool === "enemy") {
+                customEditor.level.enemies.push({
+                    x: Math.max(0, Math.min(canvas.width - 28, x - 14)),
+                    y: Math.max(65, Math.min(canvas.height - 28, y - 14)),
+                    width: 28, height: 28, vx: 1.5,
+                    minX: Math.max(0, x - 50), maxX: Math.min(canvas.width - 28, x + 50),
+                    alive: true
+                });
+                customEditor.dirty = true;
+            } else if (customEditor.tool === "spike") {
+                customEditor.level.spikes.push({ x: x - 10, y: y - 12, width: 20, height: 12 });
+                customEditor.dirty = true;
+            } else if (customEditor.tool === "erase") {
+                removeEditorItem(x, y);
+                customEditor.dirty = true;
+            }
+        });
+
+        canvas.addEventListener("mouseup", event => {
+            if (gameState !== "EDITOR" || !customEditor.dragStart) return;
+            const end = canvasPoint(event);
+            const start = customEditor.dragStart;
+            const x = Math.max(0, Math.min(start.x, end.x));
+            const width = Math.max(40, Math.min(canvas.width - x, Math.abs(end.x - start.x)));
+            const y = Math.max(70, Math.min(canvas.height - 18, start.y));
+            customEditor.level.platforms.push({
+                x, y, width, height: 18, type: "normal", visible: true,
+                isGround: y >= canvas.height - 40
+            });
+            customEditor.dirty = true;
+            customEditor.dragStart = null;
+        });
+
+        canvas.addEventListener("mousemove", event => {
+            if (gameState === "EDITOR" && customEditor.dragStart) {
+                customEditor.pointer = canvasPoint(event);
+            }
+        });
+
+        canvas.addEventListener("mouseleave", () => {
+            if (gameState === "EDITOR") {
+                customEditor.dragStart = null;
+                customEditor.pointer = null;
+            }
+        });
+
+        canvas.addEventListener("wheel", event => {
+            if (gameState !== "CUSTOM_LEVELS") return;
+            event.preventDefault();
+            const maxOffset = Math.max(0, customLevels.length - 5);
+            customListOffset = Math.max(0, Math.min(maxOffset, customListOffset + Math.sign(event.deltaY)));
+        }, { passive: false });
+
+        window.addEventListener("keydown", event => {
+            if (gameState === "EDITOR" && event.code === "Escape") leaveEditor();
+            else if (gameState === "CUSTOM_LEVELS" && event.code === "Escape") gameState = "MENU";
+        });
+
+        window.addEventListener("keydown", (e) => {
+            if ((gameState === "MENU" && e.code === "Space") ||
+                (["LEVEL_WAITING", "GAMEOVER", "VICTORY"].includes(gameState) && (e.code === "Space" || e.code === "Enter"))) {
+                handleConfirmAction();
                 return;
             }
 
@@ -354,7 +645,44 @@
             }
         });
 
+        function pollGamepad() {
+            const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+            const gamepad = Array.from(gamepads).find(pad => pad && pad.connected);
+            if (!gamepad) {
+                gamepadInput = { left: false, right: false, up: false, down: false };
+                previousGamepadButtons = [];
+                return;
+            }
+
+            const jumpButtonIndex = 3;
+            const shootButtonIndex = 2;
+            const buttonPressed = index => {
+                const button = gamepad.buttons[index];
+                return Boolean(button && (button.pressed || button.value > 0.5));
+            };
+            const justPressed = index => buttonPressed(index) && !previousGamepadButtons[index];
+            const axisX = gamepad.axes[0] || 0;
+            const axisY = gamepad.axes[1] || 0;
+
+            gamepadInput.left = axisX < -0.25 || buttonPressed(14);
+            gamepadInput.right = axisX > 0.25 || buttonPressed(15);
+            gamepadInput.up = axisY < -0.25 || buttonPressed(12);
+            gamepadInput.down = axisY > 0.25 || buttonPressed(13);
+
+            if (justPressed(jumpButtonIndex) || justPressed(9)) handleConfirmAction();
+            if (gameState === "PLAYING" && (justPressed(shootButtonIndex) || justPressed(5) || justPressed(7))) {
+                bullets.push({ x: player.x + player.width / 2, y: player.y + player.height / 2, radius: 5, vx: player.facing * 8 });
+            }
+            if (gameState === "PLAYING" && justPressed(jumpButtonIndex)) gamepadInput.up = true;
+
+            previousGamepadButtons = gamepad.buttons.map(button =>
+                Boolean(button && (button.pressed || button.value > 0.5))
+            );
+        }
+
         function update() {
+            pollGamepad();
+
             if (spawnProtectionTimer > 0) spawnProtectionTimer--;
 
             for (let i = particles.length - 1; i >= 0; i--) {
@@ -411,18 +739,18 @@
                 }
             });
 
-            if (keys["ArrowLeft"]) { player.vx = -player.speed; player.facing = -1; }
-            else if (keys["ArrowRight"]) { player.vx = player.speed; player.facing = 1; }
+            if (keys["ArrowLeft"] || gamepadInput.left) { player.vx = -player.speed; player.facing = -1; }
+            else if (keys["ArrowRight"] || gamepadInput.right) { player.vx = player.speed; player.facing = 1; }
             else { player.vx = 0; }
 
-            if (keys["ArrowUp"] && player.grounded) { 
+            if ((keys["ArrowUp"] || gamepadInput.up) && player.grounded) {
                 player.vy = player.jumpPower; 
                 player.grounded = false; 
                 player.ignorePlatform = null;
             }
 
             // Gestion de la flèche du bas pour descendre d'une plateforme
-            if (keys["ArrowDown"] && player.grounded) {
+            if ((keys["ArrowDown"] || gamepadInput.down) && player.grounded) {
                 platforms.forEach(plat => {
                     if (!plat.isGround && player.x + player.width > plat.x && player.x < plat.x + plat.width &&
                         Math.abs((player.y + player.height) - plat.y) < 5) {
@@ -514,8 +842,149 @@
             if (player.y > canvas.height) triggerDeath();
         }
 
+        function drawButton(x, y, width, label, color = "#37474F") {
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y, width, 34);
+            ctx.strokeStyle = "#ffffff";
+            ctx.strokeRect(x, y, width, 34);
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 13px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText(label, x + width / 2, y + 22);
+        }
+
+        function drawCustomLevels() {
+            ctx.fillStyle = "#151515";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "#FFEB3B";
+            ctx.font = "bold 28px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText("MES TABLEAUX", canvas.width / 2, 48);
+
+            const visibleLevels = customLevels.slice(customListOffset, customListOffset + 5);
+            if (!visibleLevels.length) {
+                ctx.fillStyle = "#cccccc";
+                ctx.font = "16px Arial";
+                ctx.fillText("Aucun tableau sauvegardé pour le moment.", canvas.width / 2, 150);
+            }
+
+            visibleLevels.forEach((item, index) => {
+                const y = 95 + index * 45;
+                ctx.fillStyle = "#263238";
+                ctx.fillRect(15, y, 770, 38);
+                ctx.textAlign = "left";
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "bold 15px Arial";
+                ctx.fillText(item.name, 28, y + 24);
+                drawButton(470, y + 2, 105, "Modifier", "#1565C0");
+                drawButton(590, y + 2, 90, "Supprimer", "#C62828");
+                drawButton(685, y + 2, 90, "Jouer", "#2E7D32");
+            });
+
+            if (customLevels.length > 5) {
+                ctx.fillStyle = "#aaaaaa";
+                ctx.font = "12px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText("Faites défiler la liste pour voir les autres tableaux.", canvas.width / 2, 326);
+            }
+            drawButton(15, 350, 250, "Créer un tableau", "#2E7D32");
+            drawButton(535, 350, 250, "Retour au menu");
+            ctx.textAlign = "left";
+        }
+
+        function drawEditor() {
+            const levelData = customEditor.level;
+            ctx.fillStyle = "#202020";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "#111111";
+            ctx.fillRect(0, 0, canvas.width, 55);
+            const tools = [
+                ["platform", "Plateforme"],
+                ["enemy", "Ennemi"],
+                ["target", "Cerise"],
+                ["spike", "Pointe"],
+                ["erase", "Gomme"]
+            ];
+            tools.forEach(([tool, label], index) => {
+                drawButton(8 + index * 92, 10, 88, label, customEditor.tool === tool ? "#1565C0" : "#37474F");
+            });
+            drawButton(475, 10, 78, "Sauver", "#2E7D32");
+            drawButton(558, 10, 78, "Tester", "#EF6C00");
+            drawButton(641, 10, 150, "Liste / retour");
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "13px Arial";
+            ctx.textAlign = "left";
+            ctx.fillText(`${levelData.name} — ${customEditor.message}`, 10, 73);
+
+            ctx.strokeStyle = "rgba(255,255,255,0.08)";
+            for (let x = 0; x <= canvas.width; x += 40) {
+                ctx.beginPath(); ctx.moveTo(x, 80); ctx.lineTo(x, canvas.height); ctx.stroke();
+            }
+            for (let y = 80; y <= canvas.height; y += 40) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+            }
+
+            levelData.platforms.forEach(platform => {
+                ctx.fillStyle = platform.isGround ? "#4CAF50" : "#03A9F4";
+                ctx.fillRect(platform.x, platform.y, platform.width, platform.height);
+            });
+            ctx.fillStyle = "#F44336";
+            ctx.font = "18px Arial";
+            ctx.textAlign = "center";
+            levelData.spikes.forEach(spike => ctx.fillText("▲", spike.x + spike.width / 2, spike.y + spike.height));
+            ctx.font = "24px Arial";
+            levelData.targets.forEach(target => ctx.fillText("🍒", target.x, target.y));
+            levelData.enemies.forEach(enemy => ctx.fillText("😈", enemy.x + enemy.width / 2, enemy.y + enemy.height / 2));
+
+            if (customEditor.dragStart) {
+                const mouse = customEditor.pointer || customEditor.dragStart;
+                ctx.fillStyle = "rgba(3, 169, 244, 0.5)";
+                ctx.fillRect(
+                    Math.min(customEditor.dragStart.x, mouse.x),
+                    customEditor.dragStart.y,
+                    Math.max(40, Math.abs(mouse.x - customEditor.dragStart.x)),
+                    18
+                );
+            }
+
+            ctx.fillStyle = "#cccccc";
+            ctx.font = "12px Arial";
+            ctx.textAlign = "left";
+            ctx.fillText("Plateforme : cliquer-glisser. Autres objets : cliquer pour placer. Gomme : cliquer sur un objet.", 10, 394);
+        }
+
         function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            editorNamePanel.hidden = gameState !== "EDITOR";
+
+            if (gameState === "CUSTOM_LEVELS") {
+                drawCustomLevels();
+                return;
+            }
+
+            if (gameState === "EDITOR") {
+                drawEditor();
+                return;
+            }
+
+            if (gameState === "CUSTOM_COMPLETE") {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = "#FFEB3B";
+                ctx.font = "bold 34px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText("TABLEAU TERMINÉ !", canvas.width / 2, 155);
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "bold 20px Arial";
+                ctx.fillText("Score : " + score, canvas.width / 2, 205);
+                ctx.fillStyle = "#4CAF50";
+                ctx.font = "bold 16px Arial";
+                ctx.fillText("Appuyez sur Espace ou Entrée pour continuer", canvas.width / 2, 340);
+                ctx.textAlign = "left";
+                return;
+            }
 
             if (gameState === "MENU") {
                 ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
@@ -540,9 +1009,8 @@
                     });
                 }
 
-                ctx.fillStyle = "#00BCD4";
-                ctx.font = "bold 18px Arial";
-                ctx.fillText("Appuyez sur ESPACE pour Jouer", canvas.width / 2, 335);
+                drawButton(175, 300, 450, "Jouer la campagne — 50 niveaux", "#2E7D32");
+                drawButton(175, 350, 450, "Créer / jouer mes tableaux", "#1565C0");
                 ctx.textAlign = "left";
                 return;
             }
