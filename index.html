@@ -242,8 +242,12 @@
                 if (l >= 2) {
                     let enemyPlats = lvlData.platforms.filter(p => p.x > 200);
                     for (let p of enemyPlats) {
-                        if (lvlData.enemies.length >= Math.min(4, 1 + Math.floor(l / 12))) break;
-                        let hasSpike = lvlData.spikes.some(s => Math.abs(s.x - p.x) < p.width);
+                        if (lvlData.enemies.length >= Math.min(4, 2 + Math.floor(l / 12))) break;
+                        let hasSpike = lvlData.spikes.some(s =>
+                            Math.abs(s.y + s.height - p.y) < 1 &&
+                            s.x < p.x + p.width &&
+                            s.x + s.width > p.x
+                        );
                         if (!hasSpike) {
                             lvlData.enemies.push({
                                 x: p.x + 10, y: p.y - 28, width: 28, height: 28,
@@ -323,6 +327,19 @@
                 return;
             }
 
+            if (gameState === "VICTORY" && (e.code === "Space" || e.code === "Enter")) {
+                if (!scoreSubmitted) {
+                    let playerName = prompt("Victoire ! Entrez votre nom pour le classement mondial :", "Joueur");
+                    if (!playerName || !playerName.trim()) return;
+
+                    scoreSubmitted = true;
+                    submitScore(playerName.trim(), score);
+                }
+                gameState = "MENU";
+                fetchLeaderboard();
+                return;
+            }
+
             if (gameState === "PLAYING" && e.code === "Space") {
                 bullets.push({ x: player.x + player.width / 2, y: player.y + player.height / 2, radius: 5, vx: player.facing * 8 });
             }
@@ -370,7 +387,9 @@
 
             if (gameState === "LEVEL_CLEARING") {
                 levelClearTimer--;
-                if (levelClearTimer <= 0) gameState = "LEVEL_WAITING";
+                if (levelClearTimer <= 0) {
+                    gameState = level >= PRESET_LEVELS.length - 1 ? "VICTORY" : "LEVEL_WAITING";
+                }
                 return;
             }
 
@@ -589,6 +608,22 @@
             ctx.fillText("Niveau: " + (level + 1), 130, 25);
             ctx.fillText("🍒: " + remainingTargets, 230, 25);
             ctx.fillText("Vies: " + "❤️ ".repeat(Math.max(0, lives)), 330, 25);
+
+            if (gameState === "VICTORY") {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = "#FFEB3B"; ctx.font = "bold 36px Arial"; ctx.textAlign = "center";
+                ctx.fillText("🎉 VICTOIRE ! 🎉", canvas.width / 2, 145);
+
+                ctx.fillStyle = "#ffffff"; ctx.font = "bold 20px Arial";
+                ctx.fillText("Vous avez terminé les 50 niveaux !", canvas.width / 2, 195);
+                ctx.fillText("Score final : " + score, canvas.width / 2, 235);
+
+                ctx.fillStyle = "#4CAF50"; ctx.font = "bold 16px Arial";
+                ctx.fillText("Appuyez sur ESPACE puis entrez votre nom pour le classement", canvas.width / 2, 340);
+                ctx.textAlign = "left";
+            }
 
             if (gameState === "GAMEOVER") {
                 ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
